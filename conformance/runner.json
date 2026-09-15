@@ -1,0 +1,8 @@
+{
+  "name": "go",
+  "probe": ["docker", "version"],
+  "build": [
+    ["docker", "run", "--rm", "-e", "GOOS=windows", "-e", "GOARCH=amd64", "-e", "CGO_ENABLED=0", "-v", "${REPO}:/src", "-v", "tricoredb-gomod:/go/pkg/mod", "-w", "/src", "golang:1.23", "go", "build", "-o", "conformance/bin/runner.exe", "./conformance/runner"]
+  ],
+  "run": ["conformance/bin/runner.exe"]
+}
