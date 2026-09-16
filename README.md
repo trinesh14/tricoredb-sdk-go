@@ -4,8 +4,8 @@ Official Go client for [TriCoreDB](https://hub.docker.com/r/trinesh14/tricoredb)
 SQL, documents, vectors, graphs and cache over one native connection.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/trinesh14/tricoredb-sdk-go.svg)](https://pkg.go.dev/github.com/trinesh14/tricoredb-sdk-go)
-[![Go version](https://img.shields.io/github/go-mod/go-version/trinesh14/tricoredb-sdk-go?cacheSeconds=86400)](go.mod)
-[![License](https://img.shields.io/github/license/trinesh14/tricoredb-sdk-go?cacheSeconds=86400)](LICENSE)
+[![Go version](https://img.shields.io/github/go-mod/go-version/trinesh14/tricoredb-sdk-go?logo=go&label=go&cacheSeconds=3600)](go.mod)
+[![License](https://img.shields.io/github/license/trinesh14/tricoredb-sdk-go?label=license&color=blue&cacheSeconds=3600)](LICENSE)
 
 - **No dependencies.** It uses only the Go standard library.
 - **Server-side parameters.** Values never become part of the SQL text.
