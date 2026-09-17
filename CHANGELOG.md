@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-17
+
+### Added
+
+- Following the leader: a request refused with `not_leader` is sent again,
+  to the leader the refusal names (over a new connection that replaces the
+  current one) or, while no leader is known, to the same node after a pause.
+  On by default; `Options.DisableFollowLeader` restores the previous
+  behaviour, and `LeaderRetries` (5) and `LeaderRetryDelay` (250ms) bound it.
+  Never inside a session transaction.
+- `ErrorCodeOutcomeUnknown`: a request a follower handed to the leader and
+  lost the answer to. It is never sent again.
+- `Client.Address()` and `ServerError.Retried`.
+
 ## [0.1.0] - 2026-09-15
 
 First release as a standalone Go module.
@@ -35,5 +49,6 @@ First release as a standalone Go module.
 - With TLS and no `CAFile`, the trust store is empty: the client never falls
   back to the operating system's root certificates.
 
-[Unreleased]: https://github.com/trinesh14/tricoredb-sdk-go/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/trinesh14/tricoredb-sdk-go/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/trinesh14/tricoredb-sdk-go/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/trinesh14/tricoredb-sdk-go/releases/tag/v0.1.0

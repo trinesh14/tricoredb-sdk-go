@@ -133,6 +133,9 @@ func main() {
 | `ClientName` | `"tricoredb-go"` | Name reported to the server |
 | `DialTimeout` | driver default | Time allowed to connect and complete the handshake |
 | `ReadTimeout` | `0` (none) | Time allowed for each reply |
+| `DisableFollowLeader` | `false` | Return `not_leader` refusals instead of sending them to the leader |
+| `LeaderRetries` | `5` | How many times a refused request is sent again |
+| `LeaderRetryDelay` | `250ms` | First pause before asking again; doubles up to 2s |
 | `TLS` | `nil` (plaintext) | See [TLS](#tls) |
 | `Features` | all features | Override the capability bitmap sent in the handshake |
 
@@ -357,12 +360,24 @@ call will fail the same way.
 `*ServerError` has a `Code` field with the server's machine-readable error
 code. Branch on `Code`, not on the message text.
 
-**Leader redirects.** In a cluster, a write that reaches a follower fails with
-`Code == "not_leader"`, and `IsNotLeader()` returns true. When the leader is
-known, `LeaderHint` holds its `host:port`. An empty hint means the leader is
-not known yet (for example during an election), so wait and retry. The client
-does not follow redirects for you: where to resend a write is your
-application's decision.
+**Leader redirects.** In a cluster only the leader accepts writes, and a
+follower refuses with `Code == "not_leader"`. The client handles that itself:
+
+- when the refusal names the leader, it opens a connection there with the same
+  `User`, `Secret` and TLS settings (the leader's host is the TLS server name),
+  sends the request again, and keeps that connection (`Address()` reports it);
+- while an election is in progress (no leader named), it waits and asks the
+  same node again, pausing 250ms, then 500ms, up to 2s;
+- after `LeaderRetries` (5) it returns the last refusal, with `Retried` set.
+
+This is safe because a `not_leader` refusal was applied nowhere. Nothing is
+sent again inside a session transaction, and never a refusal with
+`Code == "outcome_unknown"` (`ErrorCodeOutcomeUnknown`): a follower handed that
+request to the leader and lost the answer, so it may have been applied. The
+leader's address must be reachable from your application; when it is not, the
+client keeps its connection and waits.
+
+To handle redirects yourself, set `DisableFollowLeader`:
 
 ```go
 var se *tricoredb.ServerError

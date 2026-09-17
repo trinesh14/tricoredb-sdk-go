@@ -78,7 +78,31 @@ type Options struct {
 	// here — "announce nothing" — and must not be indistinguishable from
 	// "unset".
 	Features *uint64
+
+	// DisableFollowLeader turns off following the leader.
+	//
+	// By default a request a cluster node refuses with not_leader is sent
+	// again: to the leader the refusal names, over a new connection that
+	// replaces this one (authenticated with the same User and Secret, with the
+	// leader's host as the TLS server name), or, while no leader is known, to
+	// the same node after a pause. That is safe because a not_leader refusal
+	// was applied nowhere. It never happens inside a session transaction.
+	DisableFollowLeader bool
+	// LeaderRetries is how many times a refused request is sent again. Zero
+	// means 5; a negative value means none.
+	LeaderRetries int
+	// LeaderRetryDelay is the first pause before asking again while no leader
+	// is known. It doubles up to 2s. Zero means 250ms.
+	LeaderRetryDelay time.Duration
 }
+
+const (
+	defaultLeaderRetries    = 5
+	defaultLeaderRetryDelay = 250 * time.Millisecond
+	maxLeaderRetryDelay     = 2 * time.Second
+	// followConnectTimeout bounds opening the connection to a leader.
+	followConnectTimeout = 3 * time.Second
+)
 
 // TLSOptions configures the TLS session. It mirrors the Rust client's
 // TlsOptions (crates/tricore_client/src/tls.rs).
@@ -184,6 +208,12 @@ type Client struct {
 	conn      net.Conn
 	database  string
 	sessionID string
+
+	// opts is what Connect was given, kept so the driver can open a
+	// connection to the leader the same way.
+	opts Options
+	// address is the host:port this connection talks to.
+	address string
 
 	// grantedFeatures is what HELLO negotiated for this connection (V2 P2).
 	grantedFeatures uint64
@@ -376,7 +406,13 @@ func Connect(ctx context.Context, opts Options) (*Client, error) {
 		features = *opts.Features
 	}
 
-	c := &Client{conn: conn, database: database, ridPrefix: nextConnectionPrefix()}
+	c := &Client{
+		conn:      conn,
+		database:  database,
+		ridPrefix: nextConnectionPrefix(),
+		opts:      opts,
+		address:   net.JoinHostPort(host, strconv.Itoa(port)),
+	}
 	if err := c.hello(clientName, features); err != nil {
 		conn.Close()
 		return nil, err
@@ -396,6 +432,10 @@ func Connect(ctx context.Context, opts Options) (*Client, error) {
 
 	return c, nil
 }
+
+// Address is the host:port this connection talks to. It changes when the
+// driver follows the leader.
+func (c *Client) Address() string { return c.address }
 
 // Close ends the session politely (CLOSE/BYE) and releases the socket.
 //
@@ -744,6 +784,76 @@ func (c *Client) request(op any) (*Response, error) {
 	if ms := c.requestTimeoutMs.Load(); ms > 0 {
 		env.Options = &requestOptions{TimeoutMs: ms}
 	}
+
+	follow := !c.opts.DisableFollowLeader
+	retries := c.opts.LeaderRetries
+	if retries == 0 {
+		retries = defaultLeaderRetries
+	}
+	pause := c.opts.LeaderRetryDelay
+	if pause <= 0 {
+		pause = defaultLeaderRetryDelay
+	}
+	for retried := 0; ; retried++ {
+		resp, err := c.send(env)
+		var se *ServerError
+		if !errors.As(err, &se) || !se.IsNotLeader() {
+			return resp, err
+		}
+		// A not_leader refusal was applied nowhere, so sending it again cannot
+		// apply it twice. A session transaction belongs to this connection and
+		// cannot move.
+		if !follow || c.txnOpen.Load() || retried >= retries {
+			se.Retried = retried
+			return resp, se
+		}
+		if se.LeaderHint != "" && se.LeaderHint != c.address && c.moveTo(se.LeaderHint) {
+			continue
+		}
+		time.Sleep(pause)
+		if pause *= 2; pause > maxLeaderRetryDelay {
+			pause = maxLeaderRetryDelay
+		}
+	}
+}
+
+// moveTo replaces this connection with one to address, opened the way the
+// original was. It reports false, leaving this connection untouched, when
+// that fails.
+func (c *Client) moveTo(address string) bool {
+	host, portText, err := net.SplitHostPort(address)
+	if err != nil || host == "" {
+		return false
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port <= 0 || port > 65535 {
+		return false
+	}
+	o := c.opts
+	o.Host, o.Port = host, port
+	if o.TLS != nil {
+		t := *o.TLS
+		// The leader's certificate is checked against the name the hint gives.
+		t.ServerName = host
+		o.TLS = &t
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), followConnectTimeout)
+	defer cancel()
+	fresh, err := Connect(ctx, o)
+	if err != nil {
+		return false
+	}
+	old := c.conn
+	c.conn = fresh.conn
+	c.sessionID = fresh.sessionID
+	c.grantedFeatures = fresh.grantedFeatures
+	c.address = address
+	_ = old.Close()
+	return true
+}
+
+// send writes one REQUEST and decodes its RESPONSE.
+func (c *Client) send(env requestEnvelope) (*Response, error) {
 	f, err := c.exchange(tagRequest, env)
 	if err != nil {
 		return nil, err

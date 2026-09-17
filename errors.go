@@ -1,6 +1,9 @@
 package tricoredb
 
-import "errors"
+import (
+	"errors"
+	"strconv"
+)
 
 // Sentinel errors for use with errors.Is. Each concrete error type below
 // (AuthError, ServerError, ProtocolError) unwraps to one of these, so callers
@@ -108,6 +111,10 @@ type ServerError struct {
 	// Test [ServerError.Code] for the redirect and treat an empty hint as an
 	// unknown destination.
 	LeaderHint string
+
+	// Retried is how many times the driver sent this request again before
+	// returning the refusal (see [Options.DisableFollowLeader]).
+	Retried int
 }
 
 func (e *ServerError) Error() string {
@@ -116,10 +123,14 @@ func (e *ServerError) Error() string {
 	if e.Code == "" {
 		return "tricoredb: server error: " + e.Message
 	}
-	if e.LeaderHint == "" {
-		return "tricoredb: server error [" + e.Code + "]: " + e.Message
+	retried := ""
+	if e.Retried > 0 {
+		retried = " (sent again " + strconv.Itoa(e.Retried) + " times)"
 	}
-	return "tricoredb: server error [" + e.Code + ", leader " + e.LeaderHint + "]: " + e.Message
+	if e.LeaderHint == "" {
+		return "tricoredb: server error [" + e.Code + "]: " + e.Message + retried
+	}
+	return "tricoredb: server error [" + e.Code + ", leader " + e.LeaderHint + "]: " + e.Message + retried
 }
 
 func (e *ServerError) Unwrap() error { return ErrServer }
@@ -128,15 +139,18 @@ func (e *ServerError) Unwrap() error { return ErrServer }
 // valid, and this node is not the one that may serve it.
 //
 // A true result says nothing about whether [ServerError.LeaderHint] is set —
-// see that field. This driver deliberately does not follow the redirect itself:
-// re-sending a write to another address is a policy decision (which endpoints
-// are reachable, which credentials apply there, whether the operation is safe to
-// repeat) that belongs to the caller, not to a connection object.
+// see that field. Unless [Options.DisableFollowLeader] is set, the driver has
+// already sent the request again before returning this.
 func (e *ServerError) IsNotLeader() bool { return e.Code == ErrorCodeNotLeader }
 
 // ErrorCodeNotLeader is the server's `diagnostics.error_code` for a write or
 // linearizable read that reached a Raft follower.
 const ErrorCodeNotLeader = "not_leader"
+
+// ErrorCodeOutcomeUnknown is the code of a request a follower handed to the
+// leader and lost the answer to. It may or may not have been applied, so the
+// driver never sends it again.
+const ErrorCodeOutcomeUnknown = "outcome_unknown"
 
 // ProtocolError reports a violation of the wire protocol itself: an
 // unexpected tag, a truncated frame, or a body that doesn't parse as the
