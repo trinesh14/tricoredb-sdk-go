@@ -35,7 +35,7 @@ const (
 // an untagged checkout previously had nothing to state at all. This constant is
 // the SDK's version and is deliberately separate from protocolVersion: the two
 // move for different reasons.
-const Version = "0.1.0"
+const Version = "0.3.0"
 
 // Optional protocol capabilities this SDK understands, sent in HELLO as a
 // bitmap (V2 P2). The server replies with the subset it granted; a server too

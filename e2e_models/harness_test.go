@@ -20,10 +20,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -78,7 +80,52 @@ var shared *server
 // still run. A binary that exists but fails to start is a failure, not a skip.
 var skipReason string
 
+// The credentials newClient signs in with. A server this package starts runs
+// the dev authenticator, which takes any non-empty secret.
+var (
+	testUser   = "admin"
+	testSecret = "pw"
+)
+
+// externalServer names a server that is already running, from the
+// environment: TRICORE_TEST_ADDR is its host:port, TRICORE_TEST_USER and
+// TRICORE_TEST_SECRET the credentials. ok is false when no address is set.
+//
+// All three are required together. Guessing a password against a real server
+// is how an account gets locked out for everyone using it.
+func externalServer() (srv *server, ok bool, err error) {
+	addr := os.Getenv("TRICORE_TEST_ADDR")
+	if addr == "" {
+		return nil, false, nil
+	}
+	user, secret := os.Getenv("TRICORE_TEST_USER"), os.Getenv("TRICORE_TEST_SECRET")
+	if user == "" || secret == "" {
+		return nil, true, fmt.Errorf("TRICORE_TEST_ADDR is set, so TRICORE_TEST_USER and TRICORE_TEST_SECRET must be too")
+	}
+	host, portText, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, true, fmt.Errorf("TRICORE_TEST_ADDR=%q: %w", addr, err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		return nil, true, fmt.Errorf("TRICORE_TEST_ADDR=%q: %w", addr, err)
+	}
+	testUser, testSecret = user, secret
+	return &server{addr: addr, host: host, port: port}, true, nil
+}
+
 func TestMain(m *testing.M) {
+	// A server named by the environment is shared with whatever else is using
+	// it: every name these tests create is unique to the run, and only what a
+	// test created is removed.
+	if srv, ok, err := externalServer(); ok {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "e2e_models: %v\n", err)
+			os.Exit(1)
+		}
+		shared = srv
+		os.Exit(m.Run())
+	}
 	if _, err := findServerBinary(); err != nil {
 		skipReason = err.Error()
 		os.Exit(m.Run())
@@ -230,7 +277,7 @@ func newClient(t *testing.T) *tricoredb.Client {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	db, err := tricoredb.Connect(ctx, tricoredb.Options{
-		Host: shared.host, Port: shared.port, User: "admin", Secret: "pw",
+		Host: shared.host, Port: shared.port, User: testUser, Secret: testSecret,
 	})
 	if err != nil {
 		t.Fatalf("connect to %s: %v", shared.addr, err)

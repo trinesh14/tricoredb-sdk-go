@@ -229,6 +229,10 @@ type Client struct {
 	// another goroutine holds the client.
 	requestTimeoutMs atomic.Int64
 
+	// requestTxn is the document or graph transaction named on every
+	// request, or "" for none. See SetRequestTxn.
+	requestTxn atomic.Value
+
 	// lastRequestID is the request_id most recently sent, for Cancel.
 	lastRequestID atomic.Value
 
@@ -332,6 +336,32 @@ func (c *Client) SetRequestTimeout(d time.Duration) {
 		ms = 0
 	}
 	c.requestTimeoutMs.Store(ms)
+}
+
+// SetRequestTxn names a document or graph transaction on every subsequent
+// request. An empty id clears it.
+//
+// A document transaction (DocumentBeginTransaction) and a graph one
+// (GraphBeginTransaction) span requests: the requests that belong to one say
+// so by carrying its id, and a request that does not carry it runs outside the
+// transaction. Committing or rolling the transaction back through this client
+// clears the id again.
+func (c *Client) SetRequestTxn(txn string) {
+	c.requestTxn.Store(txn)
+}
+
+// RequestTxn is the transaction named on every request, or empty when none is.
+func (c *Client) RequestTxn() string {
+	if v, ok := c.requestTxn.Load().(string); ok {
+		return v
+	}
+	return ""
+}
+
+// forgetTxn stops naming txn on requests, once it has been committed or
+// rolled back.
+func (c *Client) forgetTxn(txn string) {
+	c.requestTxn.CompareAndSwap(txn, "")
 }
 
 // LastRequestID is the request_id most recently sent by this client. Pass it to
@@ -626,11 +656,13 @@ type requestEnvelope struct {
 	Options   *requestOptions `json:"options,omitempty"`
 }
 
-// requestOptions carries the per-request knobs the server understands. Only
-// the timeout is exposed today; the field is a pointer so an unset timeout
-// omits the whole object rather than sending an explicit null.
+// requestOptions carries the per-request knobs the server understands: the
+// deadline and the transaction the request runs inside. The field is a pointer
+// so a request with neither omits the whole object rather than sending an
+// explicit null.
 type requestOptions struct {
-	TimeoutMs int64 `json:"timeout_ms"`
+	TimeoutMs int64  `json:"timeout_ms,omitempty"`
+	Txn       string `json:"txn,omitempty"`
 }
 
 type wireResponse struct {
@@ -768,6 +800,12 @@ func (c *Client) Request(op any) (*Response, error) {
 // request sends a raw operation and returns the decoded response. The typed
 // helpers (Execute, Query, CacheSet, ...) all funnel through this.
 func (c *Client) request(op any) (*Response, error) {
+	return c.requestIn(op, c.RequestTxn())
+}
+
+// requestIn is request naming txn as the transaction, whatever SetRequestTxn
+// holds. An empty txn names none.
+func (c *Client) requestIn(op any, txn string) (*Response, error) {
 	rid := atomic.AddUint64(&c.rid, 1)
 	// See nextConnectionPrefix: the prefix is what keeps a CANCEL naming one
 	// statement rather than every connection's Nth statement.
@@ -781,8 +819,8 @@ func (c *Client) request(op any) (*Response, error) {
 	// A server-side deadline, distinct from any client-side deadline: this one
 	// makes the *server* stop, rather than abandoning the read on this side
 	// while the work carries on.
-	if ms := c.requestTimeoutMs.Load(); ms > 0 {
-		env.Options = &requestOptions{TimeoutMs: ms}
+	if ms := c.requestTimeoutMs.Load(); ms > 0 || txn != "" {
+		env.Options = &requestOptions{TimeoutMs: ms, Txn: txn}
 	}
 
 	follow := !c.opts.DisableFollowLeader

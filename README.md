@@ -35,6 +35,9 @@ SQL, documents, vectors, graphs and cache over one native connection.
 ## Requirements
 
 - Go **1.21** or later
+- The methods added in 0.3.0, marked below, need `tricore-server`
+  **0.1.0-rc.3** or later. An older server does not know those operations and
+  answers them with an error; everything else works against it as before.
 - A TriCoreDB server speaking protocol 1.0 (`tricore-server` 0.1.0-rc.1 or
   later). See [Running a server](#running-a-server).
 
@@ -250,6 +253,45 @@ id, err := db.CacheXAddText("events", "log", map[string]string{"msg": "hi"}, "")
 | Hashes | `CacheHSet`, `CacheHSetText`, `CacheHGet`, `CacheHDel`, `CacheHGetAll`, `CacheHExists`, `CacheHLen` |
 | Streams | `CacheXAdd`, `CacheXAddText`, `CacheXLen`, `CacheXRange`, `CacheXRead`, `CacheXDel`, `CacheXTrim` |
 
+Added in 0.3.0, for server 0.1.0-rc.3 and later (an older server answers them
+with an error):
+
+| Family | Methods |
+| --- | --- |
+| Many keys, conditions | `CacheMGet`, `CacheMSet`, `CacheWarm`, `CacheSetIf`, `CacheCompareAndSwap`, `CacheGetDel`, `CacheGetSet`, `CacheGetEx`, `CacheAppend`, `CacheExpireAt` |
+| Stale-while-revalidate | `CacheSetFresh`, `CacheGetFresh`, `CacheSetMissing` |
+| Sorted sets | `CacheZAdd`, `CacheZRem`, `CacheZScore`, `CacheZCard`, `CacheZRank`, `CacheZRange`, `CacheZRangeWithScores`, `CacheZRangeByScore`, `CacheZRangeByScoreWithScores`, `CacheZIncrBy` |
+| Locks | `CacheLockAcquire`, `CacheLockRenew`, `CacheLockRelease` |
+| Bitmaps | `CacheSetBit`, `CacheGetBit`, `CacheBitCount`, `CacheBitPos`, `CacheBitOp` |
+| HyperLogLog | `CachePfAdd`, `CachePfCount`, `CachePfMerge` |
+| Lists, sets, hashes | `CacheLMove`, `CacheLTrim`, `CacheBLPop`, `CacheBRPop`, `CacheSUnion`, `CacheSInter`, `CacheSDiff`, `CacheSRandMember`, `CacheSRandMembers`, `CacheHIncrBy` |
+| Pipelines and scripts | `CachePipeline`, `CacheTransaction`, `CacheScriptLoad`, `CacheScriptRun` |
+| Publish and poll | `CachePublish`, `CachePoll` |
+| Node and database | `CacheStats`, `CacheHotKeys`, `CachePurgeExpired`, `CacheFlushDatabase`, `CacheSetNamespaceLimit`, `CacheGetNamespaceLimit` |
+
+```go
+db.CacheZAdd("game", "board", tricoredb.ScoredMember{Score: 120, Member: []byte("ada")})
+top, err := db.CacheZRangeWithScores("game", "board", 0, 9, true)
+
+lock, err := db.CacheLockAcquire("jobs", "nightly", "worker-1", 30_000)
+if err == nil && lock.Acquired {
+	// Pass lock.Token to whatever the lock protects.
+	db.CacheLockRelease("jobs", "nightly", "worker-1")
+}
+
+replies, err := db.CachePipeline(
+	tricoredb.CmdSet("sessions", "u1", []byte("token"), 0),
+	tricoredb.CmdGet("sessions", "u1"),
+)
+```
+
+A sorted-set score is always finite, and JSON has no spelling for an infinity,
+so an open range end is `ScoreLowest()` or `ScoreHighest()`; a non-finite score
+or bound is refused before anything is sent. `CacheHotKeys` answers only when
+the server's `[cache] hot_keys` setting is above zero, and returns the payload
+as the server sent it. `CacheFlushDatabase` deletes every cache key in the
+connection's database.
+
 ## Documents
 
 Filters and aggregation stages are built with helper functions (`FilterEq`,
@@ -272,6 +314,28 @@ Also available: `DocumentInsertWithID`, `DocumentFindLimit`, `DocumentUpdate`,
 `DocumentDropIndex`, `DocumentListIndexes`, `DocumentAnalyze` and
 `DocumentAggregate`.
 
+Added in 0.3.0, for server 0.1.0-rc.3 and later: `DocumentReplace`,
+`DocumentInsertMany`, `DocumentDeleteMany`, `DocumentBulkWrite`,
+`DocumentRenameCollection`, `DocumentPurgeExpired`, `DocumentExplain`,
+`DocumentRebuildIndex`, `DocumentSetCollectionOptions`,
+`DocumentGetCollectionOptions`, `DocumentBeginTransaction`,
+`DocumentCommitTransaction` and `DocumentRollbackTransaction`.
+
+```go
+// One atomic batch: every operation lands or none does.
+res, err := db.DocumentBulkWrite("orders",
+	tricoredb.BulkInsertWithID("o1", map[string]any{"total": 10}),
+	tricoredb.BulkUpdateOne("o2", tricoredb.DocumentUpdate{Inc: map[string]any{"total": 5}}).Upsert(),
+	tricoredb.BulkDelete("o3"),
+)
+
+// A transaction spans requests. Requests join it by naming it.
+txn, err := db.DocumentBeginTransaction(false)
+db.SetRequestTxn(txn)
+db.DocumentInsertWithID("orders", "o4", map[string]any{"total": 1})
+_, err = db.DocumentCommitTransaction(txn) // also stops naming it
+```
+
 ## Vectors
 
 Fixed-dimension collections with cosine, dot or L2 distance, metadata filters
@@ -289,6 +353,17 @@ for _, hit := range res.Results {
 Also available: `VectorCreateCollectionQuantized`, `VectorSearchFiltered`,
 `VectorGet`, `VectorDelete`, `VectorListCollections`,
 `VectorDescribeCollection`, `VectorListVectors` and `VectorDropCollection`.
+
+Added in 0.3.0, for server 0.1.0-rc.3 and later: `VectorUpsertMany`,
+`VectorUpsertText`, `VectorUpsertNamed`, `VectorAddNamedVector`,
+`VectorDeleteMany`, `VectorDeleteByFilter`, `VectorUpdateByFilter`,
+`VectorCount`, `VectorSearchBatch`, `VectorSearchMulti`,
+`VectorSearchByExamples`, `VectorEmbed`, `VectorSetAlias`, `VectorListAliases`,
+`VectorListPartitions`, `VectorRenameCollection`, `VectorCopyCollection`,
+`VectorSetCollectionConfig`, `VectorRebuildIndex`, `VectorIndexStats` and
+`VectorMeasureRecall`. `VectorSearchOptions` carries the filter, the named
+vector to search (`Using`) and the other per-search settings; a field left at
+its zero value is not sent.
 
 ## Graphs
 
@@ -312,6 +387,20 @@ Also available: `GraphGetNode`, `GraphGetEdge`, `GraphDeleteNode`,
 `GraphDeleteEdge`, `GraphList`, `GraphDrop`, `GraphTraverse`,
 `GraphWeightedShortestPath`, `GraphDegree`, `GraphListNodes`,
 `GraphListEdges` and `GraphQuery`.
+
+Added in 0.3.0, for server 0.1.0-rc.3 and later:
+
+| Family | Methods |
+| --- | --- |
+| Batch writes | `GraphAddMany`, `GraphRemoveMany`, `GraphUpdateNode`, `GraphUpdateEdge`, `GraphCopy`, `GraphImportCSV` |
+| Walks and paths | `GraphDfs`, `GraphSubgraph`, `GraphKShortestPaths`, `GraphAllPaths` |
+| Algorithms | `GraphConnectedComponents`, `GraphDetectCycle`, `GraphCentrality`, `GraphCommunities`, `GraphTriangleCount`, `GraphNodeSimilarity`, `GraphPageRank` |
+| Descriptions | `GraphStats`, `GraphSchema`, `GraphCheckConsistency` |
+| Indexes and constraints | `GraphCreateNodeIndex`, `GraphCreateConstraint`, `GraphDropSchemaObject`, `GraphListSchemaObjects`, `GraphFindNodes` |
+| Cypher writes | `GraphExecute`, `GraphBeginTransaction`, `GraphCommitTransaction`, `GraphRollbackTransaction` |
+
+A graph transaction queues `GraphExecute` statements sent while `SetRequestTxn`
+names it, and the commit applies them all or none.
 
 ## LLM context
 
@@ -429,6 +518,11 @@ go test ./...
 The root package's tests need no server. The `e2e_hardening` and `e2e_models`
 suites start a real `tricore-server`; point `TRICORE_SERVER_BIN` at the binary
 to run them. Without it, those tests are skipped.
+
+`e2e_models` can instead use a server that is already running: set
+`TRICORE_TEST_ADDR` to its `host:port` together with `TRICORE_TEST_USER` and
+`TRICORE_TEST_SECRET`. All three are required; the suite does not guess a
+password.
 
 ## License
 
