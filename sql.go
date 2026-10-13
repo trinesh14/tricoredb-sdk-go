@@ -176,8 +176,13 @@ type TransactionResult struct {
 	CommittedWrites int64 `json:"committed_writes"`
 	// DiscardedWrites is the number of buffered writes thrown away.
 	DiscardedWrites int64 `json:"discarded_writes"`
-	// Outcome is "began", "committed" or "rolled_back".
+	// Outcome is "began", "committed" or "rolled_back". It is empty for a
+	// nested block, which reports NestedDepth instead.
 	Outcome string `json:"transaction"`
+	// NestedDepth is set when the keyword opened or closed a nested block
+	// rather than the transaction itself: how many nested blocks are still
+	// open. The outer transaction is open whenever this is set, zero included.
+	NestedDepth *int `json:"nested_depth"`
 }
 
 // Transaction runs a pre-declared script atomically, in one request.
@@ -335,11 +340,15 @@ func (c *Client) txnControl(keyword string) (*TransactionResult, error) {
 		}
 		return nil, err
 	}
-	c.txnOpen.Store(keyword == "BEGIN")
 	var out TransactionResult
 	if err := decodeJSON(resp, keyword, &out); err != nil {
+		c.txnOpen.Store(keyword == "BEGIN")
 		return nil, err
 	}
+	// BEGIN inside an open transaction opens a nested block backed by a
+	// savepoint. The COMMIT or ROLLBACK that closes it answers with
+	// nested_depth, and the transaction around it is still open.
+	c.txnOpen.Store(keyword == "BEGIN" || out.NestedDepth != nil)
 	return &out, nil
 }
 

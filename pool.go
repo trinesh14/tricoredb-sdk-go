@@ -163,12 +163,21 @@ func (p *Pool) Use(ctx context.Context, fn func(*Client) error) error {
 // abandonBlock rolls back a block a pooled callback left open. False when the
 // connection must be retired instead — a rollback this driver could not complete
 // leaves a session whose state no next borrower can assume anything about.
+//
+// One ROLLBACK closes one block, and the callback may have left nested ones
+// open, so this rolls back until the transaction itself is gone.
 func abandonBlock(c *Client) bool {
-	if _, err := c.Rollback(); err != nil {
-		return false
+	for i := 0; i < maxOpenBlocks && c.InTransaction(); i++ {
+		if _, err := c.Rollback(); err != nil {
+			return false
+		}
 	}
-	return true
+	return !c.InTransaction()
 }
+
+// maxOpenBlocks is how many blocks a callback may leave open before the pool
+// stops rolling them back one at a time and retires the connection instead.
+const maxOpenBlocks = 64
 
 // put returns a connection to the pool, or retires it.
 func (p *Pool) put(c *Client, broken bool) {
